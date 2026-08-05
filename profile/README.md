@@ -1,14 +1,13 @@
 # ZestfulPulse
 
-Building practical AI tools for developers.
+Open-source AI tools for developers.
 
-## Projects
+We build practical tools that simplify software development,
+App Store publishing, and AI-powered workflows.
 
-- 🚀 ios-app-store-submit
-  Claude Code skill for automating App Store submission.  
+## Featured Projects
 
-## Mission
+🚀 ios-app-store-submit
+Automate iOS App Store submission with Claude Code.
 
-Create practical open-source tools that save developers time.
-
-More projects coming soon.
+More open-source projects are coming soon.
