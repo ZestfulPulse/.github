@@ -99,7 +99,7 @@ jobs:
 
           if [ "$assets_code" = "403" ]; then
             if [ "$control_code" = "403" ]; then
-              echo "Static-assets upload is denied account-wide for this token."
+              echo "Static-assets upload is denied account-wide for this token. Current Cloudflare Workers authorization uses product/resource roles; for Wrangler CI use a supported deploy token with Workers Editor access."
             else
               echo "Static-assets upload is denied specifically for zestfulpulse-blog."
             fi
