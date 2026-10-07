@@ -1,0 +1,46 @@
+name: Cloudflare Worker Deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require Cloudflare credentials
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          test -n "$CF_TOKEN" || { echo "::error::Missing CLOUDFLARE_API_TOKEN"; exit 1; }
+          test -n "$CF_ACCOUNT" || { echo "::error::Missing CLOUDFLARE_ACCOUNT_ID organization/repository variable"; exit 1; }
+      - name: Validate token and account access
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          code=$(curl -sS -o /tmp/cf.json -w "%{http_code}" -H "Authorization: Bearer $CF_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts")
+          test "$code" = "200" || { echo "::error::Cloudflare token cannot access Workers for configured account (HTTP $code). Check token Account Resources and Workers Scripts:Edit."; exit 1; }
+  deploy:
+    needs: preflight
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      WRANGLER_LOG: warn
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test --if-present
+      - run: npx wrangler deploy
+      - name: Production smoke
+        if: vars.PRODUCTION_URL != ''
+        env:
+          PROD: ${{ vars.PRODUCTION_URL }}
+        run: curl --fail --silent --show-error --location --max-time 20 "$PROD" >/dev/null
