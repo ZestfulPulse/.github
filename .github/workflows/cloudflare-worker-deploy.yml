@@ -138,9 +138,10 @@ jobs:
 
       - name: Capture narrow production render
         working-directory: .
-        run: npx --yes playwright@1.55.0 screenshot --device="iPhone 13" --full-page "${{ inputs.production_url }}" dpl-narrow.png
+        run: npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="390,844" --full-page "${{ inputs.production_url }}" dpl-narrow.png
 
       - name: Upload DPL visual evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dpl-visual-evidence
