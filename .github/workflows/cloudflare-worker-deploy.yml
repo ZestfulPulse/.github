@@ -72,20 +72,37 @@ jobs:
           PY
 
           assets_code=$(curl -sS -o /tmp/cf-assets.json -w "%{http_code}"             -X POST             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"             -H "Content-Type: application/json"             --data '{"manifest":{}}'             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/zestfulpulse-blog/assets-upload-session")
-          echo "assets-upload-session HTTP $assets_code"
+          echo "zestfulpulse-blog assets-upload-session HTTP $assets_code"
           python3 - <<'PY'
           import json
           try:
               data=json.load(open('/tmp/cf-assets.json'))
-              print("assets_session_success=", bool(data.get('success')))
+              print("blog_assets_session_success=", bool(data.get('success')))
               if not data.get('success', False):
-                  print("cloudflare_errors=", data.get('errors'))
+                  print("blog_cloudflare_errors=", data.get('errors'))
           except Exception as e:
-              print("assets_response_parse_error=", type(e).__name__)
+              print("blog_assets_response_parse_error=", type(e).__name__)
+          PY
+
+          control_code=$(curl -sS -o /tmp/cf-assets-control.json -w "%{http_code}"             -X POST             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"             -H "Content-Type: application/json"             --data '{"manifest":{}}'             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/zestfulpulse-site/assets-upload-session")
+          echo "zestfulpulse-site control assets-upload-session HTTP $control_code"
+          python3 - <<'PY'
+          import json
+          try:
+              data=json.load(open('/tmp/cf-assets-control.json'))
+              print("control_assets_session_success=", bool(data.get('success')))
+              if not data.get('success', False):
+                  print("control_cloudflare_errors=", data.get('errors'))
+          except Exception as e:
+              print("control_assets_response_parse_error=", type(e).__name__)
           PY
 
           if [ "$assets_code" = "403" ]; then
-            echo "Static-assets upload permission denied before Wrangler deploy."
+            if [ "$control_code" = "403" ]; then
+              echo "Static-assets upload is denied account-wide for this token."
+            else
+              echo "Static-assets upload is denied specifically for zestfulpulse-blog."
+            fi
             exit 1
           fi
 
