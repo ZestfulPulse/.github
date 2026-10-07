@@ -22,6 +22,16 @@ on:
         required: false
         default: ""
         type: string
+      worker_name:
+        description: Cloudflare Worker name for access diagnostics
+        required: false
+        default: ""
+        type: string
+      visual_paths:
+        description: Comma-separated production paths to capture for DPL evidence
+        required: false
+        default: "/"
+        type: string
     secrets:
       CLOUDFLARE_API_TOKEN:
         required: false
@@ -55,54 +65,49 @@ jobs:
       - name: Worker access diagnostic
         shell: bash
         run: |
-          set -e
-          echo "Checking access to existing Worker and static-assets upload session API..."
-          scripts_code=$(curl -sS -o /tmp/cf-scripts.json -w "%{http_code}"             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts")
+          set -euo pipefail
+          echo "Checking Workers product access..."
+          scripts_code=$(curl -sS -o /tmp/cf-scripts.json -w "%{http_code}" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts")
           echo "workers/scripts HTTP $scripts_code"
-          python3 - <<'PY'
-          import json
-          try:
-              data=json.load(open('/tmp/cf-scripts.json'))
-              names=[x.get('id') for x in data.get('result',[]) if isinstance(x,dict)]
-              print("target_worker_visible=", "zestfulpulse-blog" in names)
-              if not data.get('success', False):
-                  print("cloudflare_errors=", data.get('errors'))
-          except Exception as e:
-              print("scripts_response_parse_error=", type(e).__name__)
-          PY
+          if [ "$scripts_code" != "200" ]; then
+            cat /tmp/cf-scripts.json
+            echo "Workers product access denied."
+            exit 1
+          fi
 
-          assets_code=$(curl -sS -o /tmp/cf-assets.json -w "%{http_code}"             -X POST             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"             -H "Content-Type: application/json"             --data '{"manifest":{}}'             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/zestfulpulse-blog/assets-upload-session")
-          echo "zestfulpulse-blog assets-upload-session HTTP $assets_code"
-          python3 - <<'PY'
-          import json
-          try:
-              data=json.load(open('/tmp/cf-assets.json'))
-              print("blog_assets_session_success=", bool(data.get('success')))
-              if not data.get('success', False):
-                  print("blog_cloudflare_errors=", data.get('errors'))
-          except Exception as e:
-              print("blog_assets_response_parse_error=", type(e).__name__)
-          PY
+          WORKER_NAME="${{ inputs.worker_name }}"
+          if [ -z "$WORKER_NAME" ]; then
+            echo "No worker_name supplied; product-level authorization is confirmed."
+            exit 0
+          fi
 
-          control_code=$(curl -sS -o /tmp/cf-assets-control.json -w "%{http_code}"             -X POST             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"             -H "Content-Type: application/json"             --data '{"manifest":{}}'             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/zestfulpulse-site/assets-upload-session")
-          echo "zestfulpulse-site control assets-upload-session HTTP $control_code"
-          python3 - <<'PY'
-          import json
-          try:
-              data=json.load(open('/tmp/cf-assets-control.json'))
-              print("control_assets_session_success=", bool(data.get('success')))
-              if not data.get('success', False):
-                  print("control_cloudflare_errors=", data.get('errors'))
-          except Exception as e:
-              print("control_assets_response_parse_error=", type(e).__name__)
+          export WORKER_NAME
+          visible=$(python3 - <<'PY'
+          import json, os
+          data=json.load(open('/tmp/cf-scripts.json'))
+          names=[x.get('id') for x in data.get('result',[]) if isinstance(x,dict)]
+          print("yes" if os.environ["WORKER_NAME"] in names else "no")
           PY
+          )
+          echo "target_worker_visible=$visible"
 
+          if [ "$visible" != "yes" ]; then
+            echo "Target Worker does not exist yet; deployment may create it."
+            exit 0
+          fi
+
+          assets_code=$(curl -sS -o /tmp/cf-assets.json -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data '{"manifest":{}}' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER_NAME/assets-upload-session")
+          echo "assets-upload-session HTTP $assets_code"
           if [ "$assets_code" = "403" ]; then
-            if [ "$control_code" = "403" ]; then
-              echo "Static-assets upload is denied account-wide for this token. Current Cloudflare Workers authorization uses product/resource roles; for Wrangler CI use a supported deploy token with Workers Editor access."
-            else
-              echo "Static-assets upload is denied specifically for zestfulpulse-blog."
-            fi
+            cat /tmp/cf-assets.json
+            echo "Static-assets upload is denied for the target Worker."
             exit 1
           fi
 
@@ -132,20 +137,36 @@ jobs:
         working-directory: .
         run: npx --yes playwright@1.55.0 install --with-deps chromium
 
-      - name: Capture wide production render
+      - name: Capture DPL production renders
         working-directory: .
-        run: npx --yes playwright@1.55.0 screenshot --viewport-size="1440,1200" --full-page "${{ inputs.production_url }}" dpl-wide.png
-
-      - name: Capture narrow production render
-        working-directory: .
-        run: npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="390,844" --full-page "${{ inputs.production_url }}" dpl-narrow.png
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dpl-evidence
+          IFS=',' read -ra paths <<< "${{ inputs.visual_paths }}"
+          for raw in "${paths[@]}"; do
+            path=$(echo "$raw" | xargs)
+            [ -n "$path" ] || path="/"
+            case "$path" in
+              /*) ;;
+              *) path="/$path" ;;
+            esac
+            if [ "$path" = "/" ]; then
+              slug="home"
+            else
+              slug=$(echo "$path" | sed 's#^/##; s#[/?&=]#-#g; s#[^A-Za-z0-9._-]#-#g')
+            fi
+            url="${{ inputs.production_url }}"
+            url="${url%/}$path"
+            echo "Capture $slug -> $url"
+            npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="1440,1200" --full-page "$url" "dpl-evidence/${slug}-wide.png"
+            npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="390,844" --full-page "$url" "dpl-evidence/${slug}-narrow.png"
+          done
 
       - name: Upload DPL visual evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dpl-visual-evidence
-          path: |
-            dpl-wide.png
-            dpl-narrow.png
+          path: dpl-evidence/
           if-no-files-found: error
