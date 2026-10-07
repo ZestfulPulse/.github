@@ -1,0 +1,95 @@
+name: Reusable Cloudflare Worker Deploy
+
+on:
+  workflow_call:
+    inputs:
+      production_url:
+        description: Production URL to smoke-test and visually verify
+        required: true
+        type: string
+      working_directory:
+        description: Repository working directory
+        required: false
+        default: "."
+        type: string
+      node_version:
+        description: Node.js version
+        required: false
+        default: "24"
+        type: string
+      cloudflare_account_id:
+        description: Cloudflare account ID from organization variable
+        required: true
+        type: string
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
+
+      - name: Credential preflight
+        shell: bash
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "Missing organization secret CLOUDFLARE_API_TOKEN"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "Missing organization variable CLOUDFLARE_ACCOUNT_ID"; exit 1; }
+          npx wrangler whoami
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Deploy
+        run: npx wrangler deploy
+
+      - name: Production smoke
+        shell: bash
+        run: |
+          for i in {1..18}; do
+            if curl -fsS "${{ inputs.production_url }}" >/dev/null; then
+              echo "Production smoke PASS"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Production smoke FAIL"
+          exit 1
+
+      - name: Install Chromium for DPL visual QA
+        working-directory: .
+        run: npx --yes playwright@1.55.0 install --with-deps chromium
+
+      - name: Capture wide production render
+        working-directory: .
+        run: npx --yes playwright@1.55.0 screenshot --viewport-size="1440,1200" --full-page "${{ inputs.production_url }}" dpl-wide.png
+
+      - name: Capture narrow production render
+        working-directory: .
+        run: npx --yes playwright@1.55.0 screenshot --device="iPhone 13" --full-page "${{ inputs.production_url }}" dpl-narrow.png
+
+      - name: Upload DPL visual evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: dpl-visual-evidence
+          path: |
+            dpl-wide.png
+            dpl-narrow.png
+          if-no-files-found: error
