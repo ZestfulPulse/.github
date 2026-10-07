@@ -1,0 +1,5 @@
+{
+  "name": "ZestfulPulse Cloudflare Worker",
+  "description": "Standard Worker deploy: credential preflight, Node 22, tests, deploy and production smoke.",
+  "iconName": "octicon cloud"
+}
