@@ -239,7 +239,10 @@ jobs:
           mkdir -p dpl-evidence
           IFS=',' read -ra paths <<< "${{ inputs.visual_paths }}"
 
-          cat > /tmp/zp-capture.mjs <<'JS'
+          mkdir -p /tmp/zp-playwright
+          npm install --prefix /tmp/zp-playwright --no-save --no-package-lock playwright@1.55.0 >/tmp/zp-playwright-install.log 2>&1
+
+          cat > /tmp/zp-playwright/capture.mjs <<'JS'
           import { chromium } from 'playwright';
           const [url, widePath, narrowPath, mode, user, password] = process.argv.slice(2);
           const browser = await chromium.launch({headless:true});
