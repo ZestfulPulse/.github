@@ -283,7 +283,7 @@ jobs:
             url="${url%/}$path"
             echo "Capture $slug -> $url"
 
-            npx --yes -p playwright@1.55.0 node /tmp/zp-capture.mjs               "$url"               "dpl-evidence/${slug}-wide.png"               "dpl-evidence/${slug}-narrow.png"               "${{ inputs.smoke_mode }}"               "$DEPLOY_BASIC_AUTH_USER"               "$DEPLOY_BASIC_AUTH_PASSWORD"
+            node /tmp/zp-playwright/capture.mjs               "$url"               "dpl-evidence/${slug}-wide.png"               "dpl-evidence/${slug}-narrow.png"               "${{ inputs.smoke_mode }}"               "$DEPLOY_BASIC_AUTH_USER"               "$DEPLOY_BASIC_AUTH_PASSWORD"
           done
 
       - name: Upload DPL visual evidence
