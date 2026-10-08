@@ -18,7 +18,7 @@ on:
         default: "24"
         type: string
       cloudflare_account_id:
-        description: Cloudflare account ID from organization variable
+        description: Cloudflare account ID from repository/org variable
         required: false
         default: ""
         type: string
@@ -32,8 +32,37 @@ on:
         required: false
         default: "/"
         type: string
+      install_command:
+        description: Install command. Empty string skips install.
+        required: false
+        default: "npm ci"
+        type: string
+      build_command:
+        description: Build command. Empty string skips build.
+        required: false
+        default: "npm run build"
+        type: string
+      deploy_command:
+        description: Cloudflare deploy command
+        required: false
+        default: "npx wrangler deploy"
+        type: string
+      smoke_mode:
+        description: public or basic_auth
+        required: false
+        default: "public"
+        type: string
+      unauthenticated_status:
+        description: Expected HTTP status without credentials for protected sites
+        required: false
+        default: "401"
+        type: string
     secrets:
       CLOUDFLARE_API_TOKEN:
+        required: false
+      DEPLOY_BASIC_AUTH_USER:
+        required: false
+      DEPLOY_BASIC_AUTH_PASSWORD:
         required: false
 
 jobs:
@@ -45,6 +74,8 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
+      DEPLOY_BASIC_AUTH_USER: ${{ secrets.DEPLOY_BASIC_AUTH_USER }}
+      DEPLOY_BASIC_AUTH_PASSWORD: ${{ secrets.DEPLOY_BASIC_AUTH_PASSWORD }}
 
     steps:
       - name: Production release event policy
@@ -65,14 +96,27 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
-          cache: npm
-          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
 
       - name: Credential preflight
         shell: bash
         run: |
-          test -n "$CLOUDFLARE_API_TOKEN" || { echo "Missing repository/shared secret CLOUDFLARE_API_TOKEN. Run ZestfulPulse Project Bootstrap/retrofit before production deploy."; exit 1; }
-          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "Missing repository/shared variable CLOUDFLARE_ACCOUNT_ID. Run ZestfulPulse Project Bootstrap/retrofit before production deploy."; exit 1; }
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::Missing repository/shared secret CLOUDFLARE_API_TOKEN. Run ZestfulPulse Project Bootstrap/retrofit before production deploy."; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "::error::Missing repository/shared variable CLOUDFLARE_ACCOUNT_ID. Run ZestfulPulse Project Bootstrap/retrofit before production deploy."; exit 1; }
+
+          mode="${{ inputs.smoke_mode }}"
+          case "$mode" in
+            public) ;;
+            basic_auth)
+              test -n "$DEPLOY_BASIC_AUTH_USER" || { echo "::error::Missing DEPLOY_BASIC_AUTH_USER mapping for protected deployment."; exit 1; }
+              test -n "$DEPLOY_BASIC_AUTH_PASSWORD" || { echo "::error::Missing DEPLOY_BASIC_AUTH_PASSWORD mapping for protected deployment."; exit 1; }
+              ;;
+            *)
+              echo "::error::Unsupported smoke_mode: $mode"
+              exit 1
+              ;;
+          esac
+
           npx wrangler whoami
 
       - name: Worker access diagnostic
@@ -80,9 +124,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "Checking Workers product access..."
-          scripts_code=$(curl -sS -o /tmp/cf-scripts.json -w "%{http_code}" \
-            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts")
+          scripts_code=$(curl -sS -o /tmp/cf-scripts.json -w "%{http_code}"             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts")
           echo "workers/scripts HTTP $scripts_code"
           if [ "$scripts_code" != "200" ]; then
             cat /tmp/cf-scripts.json
@@ -111,12 +153,7 @@ jobs:
             exit 0
           fi
 
-          assets_code=$(curl -sS -o /tmp/cf-assets.json -w "%{http_code}" \
-            -X POST \
-            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data '{"manifest":{}}' \
-            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER_NAME/assets-upload-session")
+          assets_code=$(curl -sS -o /tmp/cf-assets.json -w "%{http_code}"             -X POST             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"             -H "Content-Type: application/json"             --data '{"manifest":{}}'             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER_NAME/assets-upload-session")
           echo "assets-upload-session HTTP $assets_code"
           if [ "$assets_code" = "403" ]; then
             cat /tmp/cf-assets.json
@@ -125,25 +162,51 @@ jobs:
           fi
 
       - name: Install
-        run: npm ci
+        if: ${{ inputs.install_command != '' }}
+        shell: bash
+        run: ${{ inputs.install_command }}
 
       - name: Build
-        run: npm run build
+        if: ${{ inputs.build_command != '' }}
+        shell: bash
+        run: ${{ inputs.build_command }}
 
       - name: Deploy
-        run: npx wrangler deploy
+        shell: bash
+        run: ${{ inputs.deploy_command }}
 
       - name: Production smoke
         shell: bash
         run: |
+          set -euo pipefail
+          mode="${{ inputs.smoke_mode }}"
+          url="${{ inputs.production_url }}"
+
+          if [ "$mode" = "public" ]; then
+            for i in {1..18}; do
+              if curl -fsS "$url" >/dev/null; then
+                echo "Production smoke PASS"
+                exit 0
+              fi
+              sleep 10
+            done
+            echo "Production smoke FAIL"
+            exit 1
+          fi
+
+          expected="${{ inputs.unauthenticated_status }}"
           for i in {1..18}; do
-            if curl -fsS "${{ inputs.production_url }}" >/dev/null; then
-              echo "Production smoke PASS"
+            code=$(curl -sS -o /tmp/unauth.html -w "%{http_code}" "$url" || true)
+            auth_code=$(curl -sS -u "$DEPLOY_BASIC_AUTH_USER:$DEPLOY_BASIC_AUTH_PASSWORD" -o /tmp/auth.html -w "%{http_code}" "$url" || true)
+            bad_code=$(curl -sS -u "$DEPLOY_BASIC_AUTH_USER:__wrong_password__" -o /tmp/bad.html -w "%{http_code}" "$url" || true)
+            echo "protected smoke: unauth=$code auth=$auth_code invalid=$bad_code"
+            if [ "$code" = "$expected" ] && [ "$auth_code" = "200" ] && [ "$bad_code" = "$expected" ]; then
+              echo "Protected production smoke PASS"
               exit 0
             fi
             sleep 10
           done
-          echo "Production smoke FAIL"
+          echo "Protected production smoke FAIL"
           exit 1
 
       - name: Install Chromium for DPL visual QA
@@ -157,6 +220,30 @@ jobs:
           set -euo pipefail
           mkdir -p dpl-evidence
           IFS=',' read -ra paths <<< "${{ inputs.visual_paths }}"
+
+          cat > /tmp/zp-capture.mjs <<'JS'
+          import { chromium } from 'playwright';
+          const [url, widePath, narrowPath, mode, user, password] = process.argv.slice(2);
+          const browser = await chromium.launch({headless:true});
+          for (const [viewport, out] of [
+            [{width:1440,height:1200}, widePath],
+            [{width:390,height:844}, narrowPath]
+          ]) {
+            const context = await browser.newContext({
+              viewport,
+              ...(mode === 'basic_auth' ? {httpCredentials:{username:user,password}} : {})
+            });
+            const page = await context.newPage();
+            const response = await page.goto(url, {waitUntil:'networkidle'});
+            if (!response || response.status() >= 400) {
+              throw new Error(`capture failed: ${url} status=${response?.status()}`);
+            }
+            await page.screenshot({path:out, fullPage:true});
+            await context.close();
+          }
+          await browser.close();
+          JS
+
           for raw in "${paths[@]}"; do
             path=$(echo "$raw" | xargs)
             [ -n "$path" ] || path="/"
@@ -164,16 +251,18 @@ jobs:
               /*) ;;
               *) path="/$path" ;;
             esac
+
             if [ "$path" = "/" ]; then
               slug="home"
             else
               slug=$(echo "$path" | sed 's#^/##; s#[/?&=]#-#g; s#[^A-Za-z0-9._-]#-#g')
             fi
+
             url="${{ inputs.production_url }}"
             url="${url%/}$path"
             echo "Capture $slug -> $url"
-            npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="1440,1200" --full-page "$url" "dpl-evidence/${slug}-wide.png"
-            npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="390,844" --full-page "$url" "dpl-evidence/${slug}-narrow.png"
+
+            npx --yes -p playwright@1.55.0 node /tmp/zp-capture.mjs               "$url"               "dpl-evidence/${slug}-wide.png"               "dpl-evidence/${slug}-narrow.png"               "${{ inputs.smoke_mode }}"               "$DEPLOY_BASIC_AUTH_USER"               "$DEPLOY_BASIC_AUTH_PASSWORD"
           done
 
       - name: Upload DPL visual evidence
