@@ -57,6 +57,16 @@ on:
         required: false
         default: "401"
         type: string
+      basic_auth_user_binding:
+        description: Worker secret binding for Basic Auth username
+        required: false
+        default: "BASIC_AUTH_USER"
+        type: string
+      basic_auth_password_binding:
+        description: Worker secret binding for Basic Auth password
+        required: false
+        default: "BASIC_AUTH_PASSWORD"
+        type: string
     secrets:
       CLOUDFLARE_API_TOKEN:
         required: false
@@ -174,6 +184,14 @@ jobs:
       - name: Deploy
         shell: bash
         run: ${{ inputs.deploy_command }}
+
+      - name: Sync protected-site auth secrets
+        if: ${{ inputs.smoke_mode == 'basic_auth' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$DEPLOY_BASIC_AUTH_USER" | npx wrangler secret put "${{ inputs.basic_auth_user_binding }}"
+          printf '%s' "$DEPLOY_BASIC_AUTH_PASSWORD" | npx wrangler secret put "${{ inputs.basic_auth_password_binding }}"
 
       - name: Production smoke
         shell: bash
