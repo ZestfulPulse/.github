@@ -47,6 +47,19 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
 
     steps:
+      - name: Production release event policy
+        shell: bash
+        working-directory: .
+        run: |
+          set -euo pipefail
+          event="${{ github.event_name }}"
+          if [ "$event" = "pull_request" ] || [ "$event" = "pull_request_target" ]; then
+            echo "::error::Production deployment from PR events is forbidden by ZestfulPulse policy."
+            echo "::error::PR workflows must build/capture only. Deploy after merge/push or explicit workflow_dispatch."
+            exit 1
+          fi
+          echo "Release event policy PASS: $event"
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -58,8 +71,8 @@ jobs:
       - name: Credential preflight
         shell: bash
         run: |
-          test -n "$CLOUDFLARE_API_TOKEN" || { echo "Missing organization secret CLOUDFLARE_API_TOKEN"; exit 1; }
-          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "Missing organization variable CLOUDFLARE_ACCOUNT_ID"; exit 1; }
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "Missing repository/shared secret CLOUDFLARE_API_TOKEN. Run ZestfulPulse Project Bootstrap/retrofit before production deploy."; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "Missing repository/shared variable CLOUDFLARE_ACCOUNT_ID. Run ZestfulPulse Project Bootstrap/retrofit before production deploy."; exit 1; }
           npx wrangler whoami
 
       - name: Worker access diagnostic
